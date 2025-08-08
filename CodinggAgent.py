@@ -76,7 +76,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 # 🔑 Configure Gemini API
-genai.configure(api_key="AIzaSyCNf6Xf1ZB8zQaNKUbTT_z7gy4NfsV63r0")
+genai.configure(api_key="Add your API key here")
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-pro",
     temperature=0,
