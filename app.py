@@ -3,7 +3,7 @@ import json
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings  # ✅ new import
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import Tool, initialize_agent
@@ -11,25 +11,37 @@ from langchain.agents.agent_types import AgentType
 from langchain_experimental.tools.python.tool import PythonREPLTool
 from langchain.memory import ConversationBufferMemory
 import google.generativeai as genai
+from langchain.prompts import SystemMessagePromptTemplate
+from langchain.prompts.chat import SystemMessagePromptTemplate
+
+
 
 # ===== CONFIG =====
 DATA_FOLDER = "Data"
 CHUNKS_PATH = "chunks.json"
 FAISS_FOLDER = "index"
-API_KEY = "AIzaSyD8NW0cBhDw4j5plQN2rbspmIP016APfaw"  # 🔑 Replace with your API key
+API_KEY = st.secrets["API_KEY"]
+
+st.set_page_config(page_title="Python Docs Chatbot", page_icon="📚")
 
 # ===== SESSION INIT =====
+if "messages" not in st.session_state:
+    st.session_state.messages = []  # [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+
 if "agent" not in st.session_state:
-    # Load existing chunks + FAISS
+    # Load chunks + FAISS
     if os.path.exists(CHUNKS_PATH) and os.path.exists(FAISS_FOLDER):
         with open(CHUNKS_PATH, "r", encoding="utf-8") as f:
             chunks_raw = json.load(f)
         from langchain.schema import Document
         chunks = [Document(page_content=c["page_content"], metadata=c["metadata"]) for c in chunks_raw]
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2",model_kwargs={'device': 'cpu'})
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'}
+        )
         vectorstore = FAISS.load_local(FAISS_FOLDER, embeddings, allow_dangerous_deserialization=True)
     else:
-        st.error("Chunks or FAISS index not found! Run your preprocessing first.")
+        st.error("Chunks or FAISS index not found! Run preprocessing first.")
         st.stop()
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
@@ -55,28 +67,59 @@ if "agent" not in st.session_state:
         return_messages=True
     )
 
+
+
+    system_message_prompt = SystemMessagePromptTemplate.from_template("""
+    You are a helpful assistant.
+    You have access to the following tools:
+    1. DocsSearch - retrieves relevant information from the given PDF documents.
+    2. PythonREPL - executes Python code.
+
+    RULES:
+    - ONLY answer questions using the DocsSearch results.
+    - If DocsSearch returns nothing relevant, reply exactly: "I don't know."
+    - Do NOT use your own knowledge outside the provided context.
+    - For calculations, you may use PythonREPL, but the problem description must still come from DocsSearch.
+    """)
+
     agent = initialize_agent(
         tools=[repl_tool, retriever_tool],
         llm=llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
         memory=memory,
-        verbose=True
+        verbose=True,
+        handle_parsing_errors=True,
+        agent_kwargs={
+            "extra_prompt_messages": [system_message_prompt]
+        }
     )
-
     st.session_state.agent = agent
-    st.session_state.chat_history = []
 
-# ===== UI =====
+# ===== UI HEADER =====
 st.title("📚 Python Docs + Gemini Chatbot")
-user_input = st.text_area("Ask something about Python or run code:")
 
-if st.button("Send"):
-    if user_input.strip():
+# ===== DISPLAY CHAT HISTORY =====
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# ===== USER INPUT =====
+if prompt := st.chat_input("Ask something about Python or run code:"):
+    # Display user message
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Get agent response
+    with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            response = st.session_state.agent.invoke(user_input)
-        st.session_state.chat_history.append(("You", user_input))
-        st.session_state.chat_history.append(("Bot", response["output"]))
+            try:
+                response = st.session_state.agent.invoke(prompt)
+                output_text = response["output"]
+            except Exception as e:
+                output_text = f"⚠️ Error: {str(e)}"
 
-# ===== Chat History =====
-for sender, msg in st.session_state.chat_history:
-    st.markdown(f"**{sender}:** {msg}")
+        st.markdown(output_text)
+
+    # Save assistant message
+    st.session_state.messages.append({"role": "assistant", "content": output_text})
